@@ -11,7 +11,7 @@ const SET_SIZE = 5;
 const STORE_KEY = 'gkentei-stats';
 
 const state = {
-  screen: 'question', // question | result | break | end
+  screen: 'start', // start | question | result | break | end
   order: [],
   pos: 0,
   current: null, // { q, shown: [...], correct: index }
@@ -20,7 +20,12 @@ const state = {
   correct: 0,
   setAnswered: 0,
   setCorrect: 0,
-  stats: { answered: 0, correct: 0 },
+  // 累計の記録（Even アプリ内に保存）
+  // cats: 分野ごとの [解いた数, 正解数] / weak: 苦手な問題（問題文 → 続けて正解した回数）
+  stats: { answered: 0, correct: 0, last: '', conquered: 0, cats: {}, weak: {} },
+  prevLast: '', // 起動時に読んだ「前回」の日時
+  sessConquered: [], // 今回克服した問題の正解
+  sessMiss: {}, // 今回間違えた分野 → 回数
 };
 
 let bridge = null;
@@ -49,7 +54,17 @@ function pageFor(screen) {
   const cur = state.current;
   let text = '';
   let items = [];
-  if (screen === 'question') {
+  if (screen === 'start') {
+    const all = state.stats;
+    if (!all.answered) {
+      text = 'G検定 4択クイズ\n初めての学習です。がんばりましょう';
+      items = ['始める'];
+    } else {
+      const weakN = Object.keys(all.weak).length;
+      text = `前回 ${fmtDate(state.prevLast)}\n累計 ${all.correct}/${all.answered}（${pct(all.correct, all.answered)}%）\n苦手: ${weakCats()}\n苦手 ${weakN}問 ／ 克服 ${all.conquered}問`;
+      items = weakN ? ['苦手から始める', 'いつもどおり'] : ['始める'];
+    }
+  } else if (screen === 'question') {
     text = `Q${state.answered + 1} [${cur.q.cat}]\n${cur.q.q}`;
     items = [...cur.shown.map((c, i) => `${LETTERS[i]} ${c}`), '終了'];
   } else if (screen === 'result') {
@@ -61,10 +76,11 @@ function pageFor(screen) {
     text = `${SET_SIZE}問の区切り\nこの${SET_SIZE}問: ${state.setCorrect}/${state.setAnswered} 正解\n今回の合計: ${state.correct}/${state.answered}`;
     items = ['続ける', '終了'];
   } else {
-    const rate = state.answered ? Math.round((state.correct / state.answered) * 100) : 0;
-    const all = state.stats;
-    const allRate = all.answered ? Math.round((all.correct / all.answered) * 100) : 0;
-    text = `おつかれさまでした\n今回: ${state.correct}/${state.answered}（${rate}%）\nこれまで: ${all.correct}/${all.answered}（${allRate}%）`;
+    const done = state.sessConquered;
+    const conq = done.length ? `克服 ${done.length}問（${done.slice(0, 2).join('、')}${done.length > 2 ? 'ほか' : ''}）` : '克服 0問';
+    const miss = Object.entries(state.sessMiss).sort((a, b) => b[1] - a[1]);
+    const trend = miss.length ? `ミスが多い: ${miss.slice(0, 2).map(([c, n]) => `${c} ${n}問`).join('・')}` : 'ミスなし';
+    text = `おつかれさまでした\n今回 ${state.correct}/${state.answered}（${pct(state.correct, state.answered)}%）\n${conq}\n${trend}`;
     items = ['もう一度', '閉じる'];
   }
   return {
@@ -86,6 +102,52 @@ function pageFor(screen) {
 
 let currentItems = [];
 
+function pct(c, n) {
+  return n ? Math.round((c / n) * 100) : 0;
+}
+
+function fmtDate(iso) {
+  if (!iso) return '-';
+  const d = new Date(iso);
+  const p2 = (n) => String(n).padStart(2, '0');
+  return `${d.getMonth() + 1}/${d.getDate()} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+}
+
+// 正答率の低い分野を2つ（3問以上解いた分野だけ）
+function weakCats() {
+  const list = Object.entries(state.stats.cats)
+    .filter(([, v]) => v[0] >= 3)
+    .sort((a, b) => a[1][1] / a[1][0] - b[1][1] / b[1][0])
+    .slice(0, 2)
+    .map(([c, v]) => `${c} ${pct(v[1], v[0])}%`);
+  return list.length ? list.join('・') : 'まだなし';
+}
+
+// 1問の結果を累計の記録に反映する
+function record(q, ok) {
+  const st = state.stats;
+  const c = st.cats[q.cat] || [0, 0];
+  st.cats[q.cat] = [c[0] + 1, c[1] + (ok ? 1 : 0)];
+  if (!ok) {
+    st.weak[q.q] = 0; // 間違えたら苦手に入れる（続けて正解した回数をリセット）
+    state.sessMiss[q.cat] = (state.sessMiss[q.cat] || 0) + 1;
+  } else if (q.q in st.weak) {
+    st.weak[q.q] += 1;
+    if (st.weak[q.q] >= 2) { // 苦手な問題に2回続けて正解したら克服
+      delete st.weak[q.q];
+      st.conquered += 1;
+      state.sessConquered.push(q.choices[0]);
+    }
+  }
+}
+
+// 苦手な問題を先に、残りをその後ろに並べる
+function weakFirstOrder() {
+  const weak = new Set(Object.keys(state.stats.weak));
+  const idx = QUESTIONS.map((_, i) => i);
+  return [...shuffle(idx.filter((i) => weak.has(QUESTIONS[i].q))), ...shuffle(idx.filter((i) => !weak.has(QUESTIONS[i].q)))];
+}
+
 async function show(screen) {
   state.screen = screen;
   const { _items, ...page } = pageFor(screen);
@@ -100,6 +162,7 @@ async function show(screen) {
 }
 
 async function saveStats() {
+  state.stats.last = new Date().toISOString();
   try {
     await bridge.setLocalStorage(STORE_KEY, JSON.stringify(state.stats));
   } catch (_) { /* 保存できなくてもクイズは続ける */ }
@@ -108,7 +171,8 @@ async function saveStats() {
 async function loadStats() {
   try {
     const raw = await bridge.getLocalStorage(STORE_KEY);
-    if (raw) state.stats = { answered: 0, correct: 0, ...JSON.parse(raw) };
+    if (raw) state.stats = { ...state.stats, ...JSON.parse(raw) };
+    state.prevLast = state.stats.last;
   } catch (_) { /* 初回 */ }
 }
 
@@ -121,6 +185,13 @@ function nextQuestion() {
 async function onSelect(index) {
   const label = currentItems[index];
   if (label === undefined) return;
+
+  if (state.screen === 'start') {
+    state.order = label === '苦手から始める' ? weakFirstOrder() : shuffle(QUESTIONS.map((_, i) => i));
+    state.pos = 0;
+    prepareQuestion();
+    return show('question');
+  }
 
   if (state.screen === 'question') {
     if (label === '終了') return show('end');
@@ -139,6 +210,7 @@ async function onSelect(index) {
     state.setAnswered += 1;
     state.stats.answered += 1;
     if (ok) { state.correct += 1; state.setCorrect += 1; state.stats.correct += 1; }
+    record(state.current.q, ok);
     await saveStats();
     if (label === '終了') return show('end');
     if (state.setAnswered >= SET_SIZE) return show('break');
@@ -155,7 +227,10 @@ async function onSelect(index) {
   if (state.screen === 'end') {
     if (label === '閉じる') return bridge.shutDownPageContainer(0);
     state.answered = state.correct = state.setAnswered = state.setCorrect = 0;
-    return nextQuestion();
+    state.sessConquered = [];
+    state.sessMiss = {};
+    state.prevLast = state.stats.last;
+    return show('start');
   }
 }
 
@@ -183,10 +258,7 @@ async function main() {
   bridge = await waitForEvenAppBridge();
   await loadStats();
   bridge.onEvenHubEvent(handleEvent);
-  state.order = shuffle(QUESTIONS.map((_, i) => i));
-  state.pos = 0;
-  prepareQuestion();
-  await show('question');
+  await show('start');
 }
 
 main().catch((e) => {
