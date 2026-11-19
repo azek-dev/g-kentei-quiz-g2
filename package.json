@@ -1,0 +1,8 @@
+{
+  "name": "g-kentei-quiz-g2",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "node build.mjs" },
+  "dependencies": { "@evenrealities/even_hub_sdk": "^0.0.16" },
+  "devDependencies": { "esbuild": "^0.25.0" }
+}
