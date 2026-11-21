@@ -235,6 +235,12 @@ async function onSelect(index) {
 }
 
 function handleEvent(event) {
+  // ダブルタップは、どの画面でもシステムの終了確認を出す（Even Hub の審査基準）
+  const types = [event.listEvent, event.textEvent, event.sysEvent].map((e) => e?.eventType);
+  if (types.includes(OsEventTypeList.DOUBLE_CLICK_EVENT)) {
+    bridge.shutDownPageContainer(1);
+    return;
+  }
   const le = event.listEvent;
   if (!le) return;
   // CLICK_EVENT は 0 なので、省略されて undefined で届くことがある
